@@ -5890,6 +5890,54 @@ async def test_mcp_streamable_http_tool_header_provider_contextvar_reset_after_c
         _mcp_call_headers.get()
 
 
+async def test_mcp_streamable_http_tool_header_provider_applied_during_connect():
+    """Test that header_provider headers are seeded before session.initialize() runs.
+
+    Regression test: header_provider was previously only invoked from call_tool(), so the
+    initialize handshake issued during connect() went out with no headers, causing an
+    unconditional 401 against MCP servers that require auth on initialize.
+    """
+    from agent_framework._mcp import _mcp_call_headers
+
+    observed_headers: list[dict[str, str]] = []
+
+    tool = MCPStreamableHTTPTool(
+        name="test",
+        url="http://example.com/mcp",
+        header_provider=lambda kw: {"Authorization": "Bearer token-123"},
+    )
+
+    mock_transport = (Mock(), Mock())
+    mock_context_manager = Mock()
+    mock_context_manager.__aenter__ = AsyncMock(return_value=mock_transport)
+    mock_context_manager.__aexit__ = AsyncMock(return_value=None)
+    tool.get_mcp_client = Mock(return_value=mock_context_manager)  # type: ignore[method-assign]
+
+    mock_session = Mock()
+
+    async def fake_initialize():
+        try:
+            observed_headers.append(dict(_mcp_call_headers.get()))
+        except LookupError:
+            observed_headers.append({})
+        return Mock(protocolVersion="2025-06-18", capabilities=None)
+
+    mock_session.initialize = AsyncMock(side_effect=fake_initialize)
+
+    with patch("mcp.client.session.ClientSession") as mock_session_class:
+        mock_session_class.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        await tool.connect()
+
+    # header_provider's output must have been visible to the initialize() call
+    assert observed_headers == [{"Authorization": "Bearer token-123"}]
+
+    # contextvar must not leak past connect()
+    with pytest.raises(LookupError):
+        _mcp_call_headers.get()
+
+
 async def test_mcp_streamable_http_tool_without_header_provider():
     """Test that call_tool works normally when no header_provider is configured."""
 
