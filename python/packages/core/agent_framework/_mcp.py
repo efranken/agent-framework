@@ -3110,6 +3110,34 @@ class MCPStreamableHTTPTool(MCPTool):
                 _mcp_call_headers.reset(token)
         return await super().call_tool(tool_name, **kwargs)
 
+    async def _connect_on_owner(self, *, reset: bool = False, load_configured: bool = True) -> None:
+        """Connect to the MCP server, applying header_provider headers to the initialize handshake.
+
+        The MCP ``initialize`` request (and any ``load_tools``/``load_prompts`` calls that
+        happen as part of the same connect pass) is issued here, before ``call_tool()`` is
+        ever invoked. Without seeding ``_mcp_call_headers`` up front, servers that require
+        auth on ``initialize`` would reject the connection before ``header_provider`` ever
+        gets a chance to run.
+
+        The set/reset pair below must live in this method rather than in the ``connect()``/
+        ``__aenter__()`` caller: ``_connect_on_owner`` can run inside the MCP lifecycle-owner
+        task (``_run_lifecycle_owner``), a different asyncio task than the caller's, and a
+        ``contextvars.Token`` can only be reset in the context that created it.
+
+        Keyword Args:
+            reset: If True, forces a reconnection even if already connected.
+            load_configured: If True, loads tools and prompts according to the constructor flags.
+        """
+        if self._header_provider is not None:
+            headers = self._header_provider({})
+            token = _mcp_call_headers.set(headers)
+            try:
+                await super()._connect_on_owner(reset=reset, load_configured=load_configured)
+            finally:
+                _mcp_call_headers.reset(token)
+            return
+        await super()._connect_on_owner(reset=reset, load_configured=load_configured)
+
 
 class MCPWebsocketTool(MCPTool):
     """MCP tool for connecting to WebSocket-based MCP servers.
