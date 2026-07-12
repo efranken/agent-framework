@@ -2985,11 +2985,8 @@ class MCPStreamableHTTPTool(MCPTool):
                 of HTTP headers to inject into every outbound request to the MCP server.
                 Use this to forward per-request context (e.g. authentication tokens set in
                 agent middleware) without creating a separate ``httpx.AsyncClient``.
-                Also invoked with ``{}`` before the ``initialize`` handshake (and any
-                ``load_tools``/``load_prompts`` issued during the same connect pass), since no
-                per-call kwargs exist yet at that point; if the callable raises when called this
-                way, the exception is logged and that request proceeds without headers rather
-                than failing the connection.
+                Also called with ``{}`` before ``initialize`` (no per-call kwargs exist yet);
+                a raise there is logged and treated as no headers rather than a failed connect.
             task_options: Options for tools that advertise
                 ``execution.taskSupport == "required"``. See :class:`MCPTaskOptions`.
             additional_tool_argument_names: Extra argument names to forward to the MCP server in
@@ -3118,23 +3115,11 @@ class MCPStreamableHTTPTool(MCPTool):
     async def _connect_on_owner(self, *, reset: bool = False, load_configured: bool = True) -> None:
         """Connect to the MCP server, applying header_provider headers to the initialize handshake.
 
-        The MCP ``initialize`` request (and any ``load_tools``/``load_prompts`` calls that
-        happen as part of the same connect pass) is issued here, before ``call_tool()`` is
-        ever invoked. Without seeding ``_mcp_call_headers`` up front, servers that require
-        auth on ``initialize`` would reject the connection before ``header_provider`` ever
-        gets a chance to run.
-
-        The set/reset pair below must live in this method rather than in the ``connect()``/
-        ``__aenter__()`` caller: ``_connect_on_owner`` can run inside the MCP lifecycle-owner
-        task (``_run_lifecycle_owner``), a different asyncio task than the caller's, and a
-        ``contextvars.Token`` can only be reset in the context that created it.
-
-        Unlike ``call_tool()``, this call site has no per-invocation kwargs to offer, so
-        ``header_provider`` is invoked with ``{}``. Implementations written only against the
-        ``call_tool()`` contract may not expect an empty dict and could raise (e.g. indexing a
-        key that only exists on real tool calls); that's caught and logged rather than allowed
-        to fail the connection, since a genuine auth failure will still surface clearly when the
-        server itself rejects ``initialize`` — this only guards the opportunistic best-effort call.
+        ``header_provider`` was previously only called from ``call_tool()``, so ``initialize``
+        (and any ``load_tools``/``load_prompts`` in the same connect pass) went out with no
+        headers. Called here with ``{}`` since no per-call kwargs exist yet; a provider that
+        raises on that is caught and logged rather than failing the connect — a real auth
+        failure still surfaces via the server rejecting ``initialize``.
 
         Keyword Args:
             reset: If True, forces a reconnection even if already connected.
@@ -3145,10 +3130,7 @@ class MCPStreamableHTTPTool(MCPTool):
                 headers = self._header_provider({})
             except Exception:
                 logger.warning(
-                    "header_provider raised while connecting to MCP server %r; proceeding without "
-                    "headers for this request. header_provider is invoked at connect time (with "
-                    "empty kwargs) in addition to call_tool() -- implementations that assume kwargs "
-                    "is always populated will hit this until they tolerate an empty dict.",
+                    "header_provider raised while connecting to MCP server '%s'; proceeding without headers.",
                     self.name,
                     exc_info=True,
                 )
