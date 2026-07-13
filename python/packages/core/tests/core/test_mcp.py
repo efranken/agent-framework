@@ -5990,6 +5990,45 @@ async def test_mcp_streamable_http_tool_header_provider_error_during_connect_doe
         _mcp_call_headers.get()
 
 
+async def test_mcp_streamable_http_tool_no_header_provider_during_connect():
+    """Test that connect() never touches header_provider or the contextvar when none is configured."""
+    from agent_framework._mcp import _mcp_call_headers
+
+    observed_headers: list[dict[str, str]] = []
+
+    tool = MCPStreamableHTTPTool(name="test", url="http://example.com/mcp")
+    assert tool._header_provider is None
+
+    mock_transport = (Mock(), Mock())
+    mock_context_manager = Mock()
+    mock_context_manager.__aenter__ = AsyncMock(return_value=mock_transport)
+    mock_context_manager.__aexit__ = AsyncMock(return_value=None)
+    tool.get_mcp_client = Mock(return_value=mock_context_manager)  # type: ignore[method-assign]
+
+    mock_session = Mock()
+
+    async def fake_initialize():
+        try:
+            observed_headers.append(_mcp_call_headers.get())
+        except LookupError:
+            observed_headers.append({})
+        return Mock(protocolVersion="2025-06-18", capabilities=None)
+
+    mock_session.initialize = AsyncMock(side_effect=fake_initialize)
+
+    with patch("mcp.client.session.ClientSession") as mock_session_class:
+        mock_session_class.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        await tool.connect()
+
+    # the contextvar was never set, so initialize() saw no headers -- the same as before this fix.
+    assert observed_headers == [{}]
+
+    with pytest.raises(LookupError):
+        _mcp_call_headers.get()
+
+
 async def test_mcp_streamable_http_tool_without_header_provider():
     """Test that call_tool works normally when no header_provider is configured."""
 
